@@ -36,3 +36,19 @@ impl Default for WorkerConfig {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct AggregatedResult {
+    pub task: String,
+    pub total: usize,
+    pub successes: usize,
+    pub failures: usize,
+    pub results: Vec<SubTaskResult>,
+    pub synthesis: String,
+}
+
+impl AggregatedResult {
+    pub fn is_all_ok(&self) -> bool {
+        self.failures == 0
+    }
+}

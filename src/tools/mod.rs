@@ -7,6 +7,7 @@ pub mod browser;
 pub mod obscura_browser;
 pub mod mcp_client;
 pub mod research;
+pub mod web_search;
 
 use std::sync::LazyLock;
 use crate::mcp::types::{ToolDefinition, ToolResult};
@@ -45,6 +46,7 @@ fn all_entries() -> &'static [ToolEntry] {
             ToolEntry::new(browser::browser_action_definition(), browser::handle_browser_action),
             ToolEntry::new(mcp_client::call_mcp_server_definition(), mcp_client::handle_call_mcp_server),
             ToolEntry::new(research::deep_research_definition(), research::handle_deep_research),
+            ToolEntry::new(web_search::web_search_definition(), web_search::handle_web_search),
         ]
     });
     &ENTRIES

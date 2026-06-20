@@ -41,16 +41,16 @@ impl Default for AppConfig {
             telemetry_enabled: false,
             llm: LlmConfig {
                 base_url: "https://opencode.ai/zen/v1".into(),
-                model: "deepseek-v4-flash-free".into(),
+                model: "north-mini-code-free".into(),
                 api_key: String::new(),
                 max_tokens: 4096,
                 temperature: 0.7,
                 top_p: 0.95,
                 fallback_models: vec![
+                    "deepseek-v4-flash-free".into(),
                     "big-pickle".into(),
                     "nemotron-3-ultra-free".into(),
                     "mimo-v2.5-free".into(),
-                    "north-mini-code-free".into(),
                 ],
                 vision_model: "mimo-v2.5-free".into(),
             },
