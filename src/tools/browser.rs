@@ -1,3 +1,4 @@
+use std::time::Duration;
 use serde_json::{json, Value};
 use crate::mcp::types::{ToolDefinition, ToolResult, ToolContent};
 
@@ -18,17 +19,19 @@ fn error_result(text: impl Into<String>) -> Result<ToolResult, String> {
 pub fn browser_action_definition() -> ToolDefinition {
     ToolDefinition {
         name: "browser_action".into(),
-        description: "Interact with web pages. Supports navigation (fetch + read text), get_html, and screenshot (placeholder - requires Obscura CDP for full browser automation).
+        description: "Interact with web pages. Uses Obscura CDP headless browser for full automation (screenshot, click, type, execute_js), falls back to HTTP for simple navigate/get_html.
 
 Actions:
-- navigate: Fetch a URL and return the page's visible text content
-- get_html: Fetch a URL and return the raw HTML
-- screenshot: Capture a screenshot (TODO: requires Obscura/headless browser)
-- click: Click on an element by CSS selector (TODO)
-- type: Type text into an input field (TODO)
-- execute_js: Run JavaScript in the page context (TODO)
+- navigate: Fetch a URL via HTTP and return visible text content
+- get_html: Fetch a URL via HTTP and return raw HTML
+- screenshot: Navigate via Obscura CDP, capture screenshot saved to /tmp/
+- click: Navigate via Obscura CDP, click element by CSS selector
+- type: Navigate via Obscura CDP, type text into an input field
+- execute_js: Navigate via Obscura CDP, run JavaScript in page context
 
-Use navigate for reading articles, documentation, and general web content.".into(),
+Use navigate for reading articles, documentation, and general web content.
+Use CDP actions (screenshot/click/type/execute_js) for interactive web automation.
+Install Obscura with: cargo install obscura".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -37,10 +40,10 @@ Use navigate for reading articles, documentation, and general web content.".into
                     "enum": ["navigate", "get_html", "screenshot", "click", "type", "execute_js"],
                     "description": "Action to perform"
                 },
-                "url": { "type": "string", "description": "URL to navigate to (required for navigate/get_html/screenshot)" },
+                "url": { "type": "string", "description": "URL to navigate to" },
                 "selector": { "type": "string", "description": "CSS selector (for click/type actions)" },
                 "value": { "type": "string", "description": "Text value (for type action)" },
-                "script": { "type": "string", "description": "JavaScript code (for execute_js)" }
+                "script": { "type": "string", "description": "JavaScript code (for execute_js action)" }
             },
             "required": ["action"]
         }),
@@ -55,10 +58,10 @@ pub fn handle_browser_action(args: Value) -> Result<ToolResult, String> {
     match action {
         "navigate" => handle_navigate(args),
         "get_html" => handle_get_html(args),
-        "screenshot" => error_result("Screenshot requires a full browser. Install Obscura or use a headless Chromium with CDP."),
-        "click" => error_result("Click action requires a full browser with CDP. Not yet implemented."),
-        "type" => error_result("Type action requires a full browser with CDP. Not yet implemented."),
-        "execute_js" => error_result("execute_js requires a full browser with CDP. Not yet implemented."),
+        "screenshot" => handle_screenshot(args),
+        "click" => handle_click(args),
+        "type" => handle_type(args),
+        "execute_js" => handle_execute_js(args),
         _ => error_result(format!("Unknown action: {}. Valid: navigate, get_html, screenshot, click, type, execute_js", action)),
     }
 }
@@ -89,6 +92,106 @@ fn handle_get_html(args: Value) -> Result<ToolResult, String> {
     let truncated = if body.len() > 8000 { format!("\n\n... (truncated, {} total chars)", body.len()) } else { String::new() };
 
     text_result(format!("{}{}", preview, truncated))
+}
+
+fn handle_screenshot(args: Value) -> Result<ToolResult, String> {
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: url (required for screenshot)")?;
+
+    let full_page = args.get("full_page")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let browser = crate::tools::obscura_browser::get_browser().await?;
+            browser.navigate(url).await?;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let bytes = browser.screenshot(full_page).await?;
+
+            let filename = format!(
+                "screenshot_{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            );
+            let filepath = format!("/tmp/{}", filename);
+            std::fs::write(&filepath, &bytes)
+                .map_err(|e| format!("Failed to save screenshot: {}", e))?;
+
+            text_result(format!(
+                "Screenshot captured for {}\nFile: {}\nSize: {} bytes",
+                url,
+                filepath,
+                bytes.len()
+            ))
+        })
+    })
+}
+
+fn handle_click(args: Value) -> Result<ToolResult, String> {
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: url (required for click)")?;
+    let selector = args.get("selector")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: selector (CSS selector for element to click)")?;
+
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let browser = crate::tools::obscura_browser::get_browser().await?;
+            browser.navigate(url).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            browser.click(selector).await
+        })
+    })?;
+
+    text_result(format!("Clicked element '{}' on {}", selector, url))
+}
+
+fn handle_type(args: Value) -> Result<ToolResult, String> {
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: url (required for type)")?;
+    let selector = args.get("selector")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: selector (CSS selector for input element)")?;
+    let value = args.get("value")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: value (text to type)")?;
+
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let browser = crate::tools::obscura_browser::get_browser().await?;
+            browser.navigate(url).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            browser.fill(selector, value).await
+        })
+    })?;
+
+    text_result(format!("Typed '{}' into element '{}' on {}", value, selector, url))
+}
+
+fn handle_execute_js(args: Value) -> Result<ToolResult, String> {
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: url (required for execute_js)")?;
+    let script = args.get("script")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing: script (JavaScript code to execute)")?;
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let browser = crate::tools::obscura_browser::get_browser().await?;
+            browser.navigate(url).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            browser.evaluate_js(script).await
+        })
+    })?;
+
+    text_result(format!("JavaScript result:\n{}", result))
 }
 
 fn validate_url(args: &Value) -> Result<String, String> {

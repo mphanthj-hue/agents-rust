@@ -3,3 +3,6 @@
 *.swo
 *~
 .env
+.idea/
+/plugins/*/target/
+/plugins/*/Cargo.lock

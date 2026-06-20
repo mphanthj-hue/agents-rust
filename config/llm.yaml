@@ -1,0 +1,38 @@
+---
+circuit_breaker:
+  failure_threshold: 3
+  recovery_timeout_secs: 30
+  min_requests: 1
+
+models:
+  - name: "deepseek-v4-flash-free"
+    provider: "opencode"
+    base_url: "https://opencode.ai/zen/v1"
+    api_key: ""  # để trống → dùng từ config global
+    fallbacks:
+      - "big-pickle"
+      - "nemotron-3-ultra-free"
+    rate_limit_fallbacks:
+      - "north-mini-code-free"
+    context_window_fallbacks:
+      - "mimo-v2.5-free"
+
+  - name: "big-pickle"
+    provider: "opencode"
+    base_url: "https://opencode.ai/zen/v1"
+    fallbacks:
+      - "nemotron-3-ultra-free"
+
+  - name: "nemotron-3-ultra-free"
+    provider: "opencode"
+    base_url: "https://opencode.ai/zen/v1"
+    fallbacks:
+      - "mimo-v2.5-free"
+
+  - name: "mimo-v2.5-free"
+    provider: "opencode"
+    base_url: "https://opencode.ai/zen/v1"
+
+  - name: "north-mini-code-free"
+    provider: "opencode"
+    base_url: "https://opencode.ai/zen/v1"

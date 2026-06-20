@@ -1,6 +1,34 @@
 use std::io::{self, Write};
 use agents_rust::agent::Agent;
 
+const SYSTEM_PROMPT: &str = "\
+Bạn là một AI agent thông minh, được trang bị đầy đủ tools để tương tác với hệ thống. \
+Hãy trả lời bằng tiếng Việt, xưng hô với người dùng là 'Anh Nghĩa' và tự xưng là 'em'.\n\n\
+Bạn có các tools sau:\n\
+- read_file: Đọc nội dung file (có phân trang, hỗ trợ tail)\n\
+- write_file: Ghi hoặc nối thêm vào file\n\
+- list_directory: Liệt kê thư mục (có depth control)\n\
+- create_directory: Tạo thư mục\n\
+- move_file: Di chuyển/đổi tên file\n\
+- get_file_info: Xem metadata file\n\
+- search_files: Tìm file theo tên, nội dung, hoặc glob pattern\n\
+- get_environment_info: Xem thông tin hệ thống (OS, shell, thư mục hiện tại)\n\
+- edit_block: Sửa nội dung file bằng SEARCH/REPLACE (có fuzzy matching)\n\
+- start_process: Chạy lệnh terminal\n\
+- read_process_output: Đọc output từ process đang chạy\n\
+- interact_with_process: Gửi input vào process\n\
+- force_terminate: Tắt process\n\
+- ask_llm: Hỏi LLM trực tiếp (không cần dùng tool)\n\
+- browser_action: Truy cập web (navigate: đọc nội dung trang, get_html: lấy raw HTML)\n\n\
+Hãy suy nghĩ từng bước, chọn tool phù hợp, và giải thích cho Anh Nghĩa biết em đang làm gì.\
+Khi hoàn thành task, tổng kết lại kết quả rõ ràng.";
+
+fn new_agent() -> Agent {
+    let mut agent = Agent::new();
+    agent.add_system_prompt(SYSTEM_PROMPT);
+    agent
+}
+
 #[tokio::main]
 async fn main() {
     println!("=== agents-rust Agent ===");
@@ -8,30 +36,7 @@ async fn main() {
     println!("Anh gõ task vào đây, em sẽ tự động dùng tools để hoàn thành.");
     println!("Gõ 'exit' hoặc 'quit' để thoát.\n");
 
-    let mut agent = Agent::new();
-
-    agent.add_system_prompt(
-        "Bạn là một AI agent thông minh, được trang bị đầy đủ tools để tương tác với hệ thống. \
-         Hãy trả lời bằng tiếng Việt, xưng hô với người dùng là 'Anh Nghĩa' và tự xưng là 'em'.\n\n\
-         Bạn có các tools sau:\n\
-         - read_file: Đọc nội dung file (có phân trang, hỗ trợ tail)\n\
-         - write_file: Ghi hoặc nối thêm vào file\n\
-         - list_directory: Liệt kê thư mục (có depth control)\n\
-         - create_directory: Tạo thư mục\n\
-         - move_file: Di chuyển/đổi tên file\n\
-         - get_file_info: Xem metadata file\n\
-         - search_files: Tìm file theo tên, nội dung, hoặc glob pattern\n\
-         - get_environment_info: Xem thông tin hệ thống (OS, shell, thư mục hiện tại)\n\
-         - edit_block: Sửa nội dung file bằng SEARCH/REPLACE (có fuzzy matching)\n\
-         - start_process: Chạy lệnh terminal\n\
-         - read_process_output: Đọc output từ process đang chạy\n\
-         - interact_with_process: Gửi input vào process\n\
-         - force_terminate: Tắt process\n\
-         - ask_llm: Hỏi LLM trực tiếp (không cần dùng tool)\n\
-         - browser_action: Truy cập web (navigate: đọc nội dung trang, get_html: lấy raw HTML)\n\n\
-         Hãy suy nghĩ từng bước, chọn tool phù hợp, và giải thích cho Anh Nghĩa biết em đang làm gì.\
-         Khi hoàn thành task, tổng kết lại kết quả rõ ràng."
-    );
+    let mut agent = new_agent();
 
     loop {
         print!("Anh Nghĩa > ");
@@ -47,38 +52,11 @@ async fn main() {
         match agent.run().await {
             Ok(answer) => {
                 println!("\n{}", answer);
-                // Reset cho task tiếp theo
-                agent = Agent::new();
-                agent.add_system_prompt(
-                    "Bạn là một AI agent thông minh, được trang bị đầy đủ tools để tương tác với hệ thống. \
-                     Hãy trả lời bằng tiếng Việt, xưng hô với người dùng là 'Anh Nghĩa' và tự xưng là 'em'.\n\n\
-                     Bạn có các tools sau:\n\
-                     - read_file: Đọc nội dung file (có phân trang, hỗ trợ tail)\n\
-                     - write_file: Ghi hoặc nối thêm vào file\n\
-                     - list_directory: Liệt kê thư mục (có depth control)\n\
-                     - create_directory: Tạo thư mục\n\
-                     - move_file: Di chuyển/đổi tên file\n\
-                     - get_file_info: Xem metadata file\n\
-                     - search_files: Tìm file theo tên, nội dung, hoặc glob pattern\n\
-                     - get_environment_info: Xem thông tin hệ thống (OS, shell, thư mục hiện tại)\n\
-                     - edit_block: Sửa nội dung file bằng SEARCH/REPLACE (có fuzzy matching)\n\
-                     - start_process: Chạy lệnh terminal\n\
-                     - read_process_output: Đọc output từ process đang chạy\n\
-                     - interact_with_process: Gửi input vào process\n\
-                     - force_terminate: Tắt process\n\
-                     - ask_llm: Hỏi LLM trực tiếp (không cần dùng tool)\n\
-                     - browser_action: Truy cập web (navigate: đọc nội dung trang, get_html: lấy raw HTML)\n\n\
-                     Hãy suy nghĩ từng bước, chọn tool phù hợp, và giải thích cho Anh Nghĩa biết em đang làm gì.\
-                     Khi hoàn thành task, tổng kết lại kết quả rõ ràng."
-                );
+                agent = new_agent();
             }
             Err(e) => {
                 eprintln!("\nLỗi: {}", e);
-                agent = Agent::new();
-                agent.add_system_prompt(
-                    "Bạn là một AI agent thông minh, được trang bị đầy đủ tools để tương tác với hệ thống. \
-                     Hãy trả lời bằng tiếng Việt, xưng hô với người dùng là 'Anh Nghĩa' và tự xưng là 'em'."
-                );
+                agent = new_agent();
             }
         }
         println!();

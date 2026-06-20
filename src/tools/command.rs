@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, LazyLock, Arc};
 use std::process::{Stdio, Child};
 use std::thread;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use serde_json::{json, Value};
 use crate::mcp::types::{ToolDefinition, ToolResult, ToolContent};
 use crate::config;
@@ -190,8 +190,6 @@ fn read_lines<R: Read + Send + 'static>(reader: R, lines: Arc<Mutex<Vec<String>>
         }
     }
 }
-
-use std::io::Read;
 
 fn collect_output(session_id: &str, offset: i64, length: i64) -> Result<String, String> {
     let sessions = SESSIONS.lock().map_err(|e| format!("Lock: {}", e))?;

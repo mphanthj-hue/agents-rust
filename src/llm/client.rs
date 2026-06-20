@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use reqwest::Client as HttpClient;
 use crate::config;
 use crate::llm::types::*;
+use crate::llm::router::LlmRouter;
 
 pub struct LlmClient {
     client: HttpClient,
@@ -9,11 +11,13 @@ pub struct LlmClient {
     model: String,
     fallback_models: Vec<String>,
     vision_model: String,
+    router: Option<Arc<LlmRouter>>,
 }
 
 impl LlmClient {
     pub fn new() -> Self {
         let cfg = config::get();
+        let router = LlmRouter::from_default().ok().map(Arc::new);
         Self {
             client: HttpClient::new(),
             base_url: cfg.llm.base_url,
@@ -21,11 +25,13 @@ impl LlmClient {
             model: cfg.llm.model,
             fallback_models: cfg.llm.fallback_models.clone(),
             vision_model: cfg.llm.vision_model.clone(),
+            router,
         }
     }
 
     pub fn with_config(base_url: &str, api_key: &str, model: &str) -> Self {
         let cfg = config::get();
+        let router = LlmRouter::from_default().ok().map(Arc::new);
         Self {
             client: HttpClient::new(),
             base_url: base_url.to_string(),
@@ -33,6 +39,7 @@ impl LlmClient {
             model: model.to_string(),
             fallback_models: cfg.llm.fallback_models.clone(),
             vision_model: cfg.llm.vision_model.clone(),
+            router,
         }
     }
 
@@ -140,40 +147,61 @@ impl LlmClient {
     }
 
     pub async fn chat_with_fallback(&self, messages: Vec<ChatMessage>, tools: Vec<ToolDefinition>) -> Result<ChatResponse, String> {
-        let mut last_error = String::new();
+        let mut errors: Vec<String> = Vec::new();
 
         // Try primary model
-        match self.send_request(&self.build_request_with_tools(messages.clone(), tools.clone())).await {
+        let primary_req = self.build_request_with_tools(messages.clone(), tools.clone());
+        match self.send_request(&primary_req).await {
             Ok(r) => return Ok(r),
-            Err(e) => last_error = e,
+            Err(e) => errors.push(format!("primary: {}", e)),
         }
 
-        // Try fallback models
+        // Try fallback models — reuse params from a single base request
+        let base = self.build_request_with_tools(messages.clone(), tools.clone());
         for fb in &self.fallback_models {
             let req = ChatRequest {
                 model: fb.clone(),
                 messages: messages.clone(),
-                temperature: self.build_request_with_tools(messages.clone(), tools.clone()).temperature,
-                max_tokens: self.build_request_with_tools(messages.clone(), tools.clone()).max_tokens,
-                top_p: self.build_request_with_tools(messages.clone(), tools.clone()).top_p,
+                temperature: base.temperature,
+                max_tokens: base.max_tokens,
+                top_p: base.top_p,
                 stream: None,
                 tools: Some(tools.clone()),
                 tool_choice: Some(serde_json::json!("auto")),
             };
 
             match self.send_request(&req).await {
-                Ok(r) => {
-                    // Update primary model to the working one for subsequent calls
-                    // (We can't mutate self here, but caller can check)
-                    return Ok(r);
-                }
-                Err(e) => {
-                    last_error = format!("{} | {} failed: {}", last_error, fb, e);
-                }
+                Ok(r) => return Ok(r),
+                Err(e) => errors.push(format!("{} failed: {}", fb, e)),
             }
         }
 
-        Err(format!("All models failed: {}", last_error))
+        Err(format!("All models failed: {}", errors.join(" | ")))
+    }
+
+    pub async fn chat_with_intelligent_fallback(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolDefinition>,
+        preferred_model: Option<&str>,
+    ) -> Result<ChatResponse, String> {
+        match &self.router {
+            Some(router) => {
+                router.chat_with_fallback(messages, tools, preferred_model).await
+            }
+            None => {
+                if tools.is_empty() {
+                    self.chat(messages).await
+                } else {
+                    self.chat_with_tools(messages, tools).await
+                }
+            }
+        }
+    }
+
+    pub fn with_router(mut self, router: Arc<LlmRouter>) -> Self {
+        self.router = Some(router);
+        self
     }
 
     pub async fn chat_stream(

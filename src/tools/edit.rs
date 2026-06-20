@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use serde_json::Value;
 use crate::mcp::types::{ToolDefinition, ToolResult, ToolContent};
 use crate::tools::fuzzy_search::{find_closest, highlight_diff, is_similar_enough};

@@ -1,149 +1,95 @@
-use std::sync::Arc;
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber;
+use std::sync::Arc;
 
 mod config;
+mod plugin;
 mod mcp;
 mod tools;
 mod security;
-mod terminal;
 mod llm;
+mod agent;
+mod server;
 
-use mcp::types::*;
-use tools::ToolHandler;
+use server::AgentsRustServer;
+use rmcp::service::serve_server;
+use llm::router::LlmRouter;
+use llm::client::LlmClient;
+use llm::types::ChatMessage;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
         .with_target(false)
         .init();
 
-    // Config is auto-initialized via LazyLock
-
-    // Register tools
-    let tools_list = Arc::new(tools::get_all_tool_definitions());
-    let mut handlers: Vec<(String, ToolHandler)> = Vec::new();
-    for tool in tools_list.iter() {
-        if let Some(handler) = tools::get_tool_handler(&tool.name) {
-            handlers.push((tool.name.clone(), handler));
+    // Allow quick chat test via CLI: `cargo run -- --chat "hello"`
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--chat") {
+        if let Some(prompt) = args.get(pos + 1) {
+            return run_chat_test(prompt).await;
         }
     }
-    let handlers = Arc::new(handlers);
 
-    let stdin = tokio::io::stdin();
-    let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
-    let mut stdout = tokio::io::stdout();
+    plugin::init().unwrap_or_else(|e| eprintln!("[plugin] init error: {}", e));
 
-    // MCP init state
-    let mut initialized = false;
+    let tcp_port = std::env::var("AGENTS_RUST_TCP_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok());
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.trim().is_empty() { continue; }
-
-        let msg: JsonRpcMessage = match serde_json::from_str(&line) {
-            Ok(m) => m,
-            Err(e) => {
-                let err = JsonRpcMessage {
-                    jsonrpc: "2.0".into(),
-                    id: Some(Value::Null),
-                    method: None,
-                    params: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {}", e),
-                        data: None,
-                    }),
-                };
-                send(&mut stdout, &err).await;
-                continue;
-            }
-        };
-
-        let method = match msg.method.as_deref() {
-            Some(m) => m,
-            None => continue,
-        };
-
-        match method {
-            "initialize" => {
-                let result = serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {}
-                    },
-                    "serverInfo": {
-                        "name": "agents-rust",
-                        "version": "0.1.0"
-                    }
-                });
-                if let Some(id) = msg.id {
-                    send(&mut stdout, &JsonRpcMessage::result(id, result)).await;
-                }
-            }
-            "notifications/initialized" => {
-                initialized = true;
-            }
-            "notifications/exit" => {
-                break;
-            }
-            "tools/list" => {
-                let result = serde_json::json!({ "tools": *tools_list });
-                if let Some(id) = msg.id {
-                    send(&mut stdout, &JsonRpcMessage::result(id, result)).await;
-                }
-            }
-            "tools/call" => {
-                if let Some(id) = msg.id {
-                    let params = msg.params.unwrap_or(Value::Null);
-                    let tool_name = params.get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let arguments = params.get("arguments")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-
-                    let resp = if let Some((_, handler)) = handlers.iter().find(|(n, _)| n == tool_name) {
-                        match handler(arguments) {
-                            Ok(result) => {
-                                JsonRpcMessage::result(id, serde_json::to_value(result).unwrap())
-                            }
-                            Err(e) => {
-                                let err_result = ToolResult {
-                                    content: vec![ToolContent::Text { text: e }],
-                                    is_error: Some(true),
-                                };
-                                JsonRpcMessage::result(id, serde_json::to_value(err_result).unwrap())
-                            }
-                        }
-                    } else {
-                        let err_result = ToolResult {
-                            content: vec![ToolContent::Text {
-                                text: format!("Tool not found: {}", tool_name)
-                            }],
-                            is_error: Some(true),
-                        };
-                        JsonRpcMessage::result(id, serde_json::to_value(err_result).unwrap())
-                    };
-                    send(&mut stdout, &resp).await;
-                }
-            }
-            _ => {
-                if let Some(id) = msg.id {
-                    send(&mut stdout, &JsonRpcMessage::error(id, -32601, format!("Method not found: {}", method))).await;
-                }
-            }
-        }
+    if let Some(port) = tcp_port {
+        serve_tcp(port).await?;
+    } else {
+        serve_stdio().await?;
     }
+
+    Ok(())
 }
 
-async fn send(stdout: &mut tokio::io::Stdout, msg: &JsonRpcMessage) {
-    let json = serde_json::to_string(msg).unwrap_or_default();
-    let mut line = json;
-    line.push('\n');
-    let _ = stdout.write_all(line.as_bytes()).await;
-    let _ = stdout.flush().await;
+async fn run_chat_test(prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let router = LlmRouter::from_default()?;
+    let router = Arc::new(router);
+    let client = LlmClient::new().with_router(router);
+
+    let msg = ChatMessage::user(prompt);
+    let resp = client.chat_with_intelligent_fallback(
+        vec![ChatMessage::system("Bạn là trợ lý AI hữu ích. Trả lời ngắn gọn."), msg],
+        Vec::new(),
+        None,
+    ).await.map_err(|e| format!("Chat lỗi: {}", e))?;
+
+    if let Some(content) = resp.choices.first().and_then(|c| c.message.content.clone()) {
+        println!("{}", content);
+    }
+    Ok(())
+}
+
+async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
+    let handler = AgentsRustServer;
+    let service = serve_server(handler, (tokio::io::stdin(), tokio::io::stdout())).await?;
+    service.waiting().await?;
+    Ok(())
+}
+
+async fn serve_tcp(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    println!("agents-rust TCP MCP server listening on tcp://{}", addr);
+
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        println!("New connection from: {}", peer);
+        tokio::spawn(async move {
+            let handler = AgentsRustServer;
+            let (r, w) = stream.into_split();
+            match serve_server(handler, (r, w)).await {
+                Ok(service) => {
+                    if let Err(e) = service.waiting().await {
+                        eprintln!("Connection error: {}", e);
+                    }
+                }
+                Err(e) => eprintln!("Failed to initialize: {}", e),
+            }
+        });
+    }
 }

@@ -1,88 +1,84 @@
 use crate::llm::LlmClient;
 use crate::llm::types::*;
 use crate::tools;
-use crate::config;
+use crate::orchestrator::types::*;
 use serde_json::Value;
+use std::time::Duration;
+use tokio::time::timeout;
 
-pub struct Agent {
+pub struct Worker {
     client: LlmClient,
     tools: Vec<ToolDefinition>,
     messages: Vec<ChatMessage>,
-    used_fallback: bool,
-    active_model: String,
+    config: WorkerConfig,
+    name: String,
 }
 
-impl Agent {
-    pub fn new() -> Self {
-        let cfg = config::get();
-        let tool_defs = tools::get_all_tool_definitions();
-
-        let openai_tools: Vec<ToolDefinition> = tool_defs.iter().map(|t| {
-            ToolDefinition {
-                type_: "function".into(),
-                function: ToolInfo {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.input_schema.clone(),
-                },
-            }
-        }).collect();
-
-        let initial_model = cfg.llm.model.clone();
+impl Worker {
+    pub fn new(name: &str, instruction: &str, allowed_tools: &[String], config: WorkerConfig) -> Self {
+        let all_tool_defs = tools::get_all_tool_definitions();
+        
+        let openai_tools: Vec<ToolDefinition> = all_tool_defs
+            .iter()
+            .filter(|t| allowed_tools.is_empty() || allowed_tools.contains(&t.name))
+            .map(|t| {
+                ToolDefinition {
+                    type_: "function".into(),
+                    function: ToolInfo {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.input_schema.clone(),
+                    },
+                }
+            })
+            .collect();
 
         Self {
-            client: if cfg.llm.api_key.is_empty() {
-                LlmClient::new()
-            } else {
-                LlmClient::with_config(&cfg.llm.base_url, &cfg.llm.api_key, &initial_model)
-            },
+            client: LlmClient::new(),
             tools: openai_tools,
-            messages: Vec::new(),
-            used_fallback: false,
-            active_model: initial_model,
+            messages: vec![ChatMessage::system(instruction)],
+            config,
+            name: name.to_string(),
         }
     }
 
-    pub fn add_system_prompt(&mut self, prompt: &str) {
-        self.messages.push(ChatMessage::system(prompt));
-    }
-
-    pub fn add_user_message(&mut self, text: &str) {
-        // Auto-detect vision: if prompt mentions images, switch to vision model
-        if LlmClient::has_vision(text) && !self.active_model.contains("mimo") {
-            let vision = self.client.vision_model().to_string();
-            self.client.set_model(&vision);
-            self.active_model = vision;
+    pub async fn run(&mut self, task: &str) -> SubTaskResult {
+        self.messages.push(ChatMessage::user(task));
+        
+        let result = timeout(Duration::from_secs(self.config.timeout_secs), self.run_loop()).await;
+        
+        match result {
+            Ok(Ok(output)) => SubTaskResult {
+                id: self.name.clone(),
+                output,
+                error: None,
+            },
+            Ok(Err(e)) => SubTaskResult {
+                id: self.name.clone(),
+                output: String::new(),
+                error: Some(e),
+            },
+            Err(_) => SubTaskResult {
+                id: self.name.clone(),
+                output: String::new(),
+                error: Some(format!("Worker '{}' timed out after {}s", self.name, self.config.timeout_secs)),
+            },
         }
-        self.messages.push(ChatMessage::user(text));
     }
 
-    pub fn active_model(&self) -> &str { &self.active_model }
-    pub fn used_fallback(&self) -> bool { self.used_fallback }
-
-    pub async fn run(&mut self) -> Result<String, String> {
-        let max_iterations = 20;
+    async fn run_loop(&mut self) -> Result<String, String> {
+        let max_iterations = self.config.max_iterations;
         let mut iteration = 0;
-        let primary_model = config::get().llm.model;
 
         loop {
             if iteration >= max_iterations {
-                return Err("Agent reached maximum iterations".into());
+                return Err("Worker reached maximum iterations".into());
             }
             iteration += 1;
 
             let response = self.client
-                .chat_with_intelligent_fallback(self.messages.clone(), self.tools.clone(), None)
+                .chat_with_fallback(self.messages.clone(), self.tools.clone())
                 .await?;
-
-            // Check if fallback was used (model in response differs from primary)
-            if let Some(ref resp_model) = response.model {
-                if resp_model != &primary_model {
-                    self.used_fallback = true;
-                    self.active_model = resp_model.clone();
-                    self.client.set_model(resp_model);
-                }
-            }
 
             let choice = response.choices.into_iter().next()
                 .ok_or("Empty response from LLM")?;
