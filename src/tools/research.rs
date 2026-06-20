@@ -1,3 +1,4 @@
+use std::time::Duration;
 use serde_json::{json, Value};
 use crate::mcp::types::{ToolDefinition, ToolResult, ToolContent};
 
@@ -10,7 +11,8 @@ pub fn deep_research_definition() -> ToolDefinition {
             How it works:\n\
             1. Searches GitHub code (via grep.app)\n\
             2. Fetches web pages for context\n\
-            3. Generates a synthesized report using LLM"
+            3. Generates a synthesized report using LLM\n\n\
+            Timeout: 25 seconds. Returns partial results if exceeded."
         .into(),
         input_schema: json!({
             "type": "object",
@@ -29,36 +31,43 @@ pub fn deep_research_definition() -> ToolDefinition {
 pub fn handle_deep_research(args: Value) -> Result<ToolResult, String> {
     let query = args.get("query")
         .and_then(|v| v.as_str())
-        .ok_or("Missing: query")?;
+        .ok_or("Missing: query")?
+        .to_string();
     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).min(2) as u8;
 
-    let handle = tokio::runtime::Handle::current();
+    tokio::task::block_in_place(|| {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async {
+            tokio::time::timeout(Duration::from_secs(25), do_research(&query, depth)).await
+                .unwrap_or_else(|_| {
+                    Ok(ToolResult {
+                        content: vec![ToolContent::Text {
+                            text: format!("# Research: {}\n\n⚠️ Research timed out after 25 seconds. Try a more specific query or use search tools directly.", query)
+                        }],
+                        is_error: Some(true),
+                    })
+                })
+        })
+    })
+}
 
+async fn do_research(query: &str, depth: u8) -> Result<ToolResult, String> {
     let mut sections: Vec<String> = Vec::new();
     sections.push(format!("# Research: {}\n", query));
 
-    // Phase 1: Code search (fast - single HTTP call)
     sections.push("\n## 🔎 Code\n".to_string());
-    let code = tokio::task::block_in_place(|| {
-        handle.block_on(grep_search(query))
-    }).unwrap_or_else(|e| format!("*Search error: {}*", e));
+    let code = grep_search(query).await.unwrap_or_else(|e| format!("*Search error: {}*", e));
     sections.push(code);
 
-    // Phase 2: Web pages (depth >= 2)
     if depth >= 2 {
         sections.push("\n## 🌐 Web\n".to_string());
-        let web = tokio::task::block_in_place(|| {
-            handle.block_on(fetch_web(query))
-        }).unwrap_or_else(|e| format!("*Fetch error: {}*", e));
+        let web = fetch_web(query).await.unwrap_or_else(|e| format!("*Fetch error: {}*", e));
         sections.push(web);
     }
 
-    // Phase 3: LLM synthesis
     sections.push("\n---\n## 🧠 Synthesis\n".to_string());
     let raw = sections.join("\n");
-    let synth = tokio::task::block_in_place(|| {
-        handle.block_on(llm_summarize(query, &raw))
-    }).unwrap_or_else(|_| "*Synthesis unavailable*".to_string());
+    let synth = llm_summarize(query, &raw).await.unwrap_or_else(|_| "*Synthesis unavailable*".to_string());
     sections.push(synth);
 
     Ok(ToolResult {
@@ -154,7 +163,7 @@ async fn send_sse(client: &reqwest::Client, url: &str, body: Value) -> Result<Va
         .map_err(|e| format!("HTTP: {}", e))?;
     if !resp.status().is_success() { return Err(format!("HTTP {}", resp.status())); }
     let text = resp.text().await.map_err(|e| format!("Read: {}", e))?;
-    text.lines().filter_map(|l| l.strip_prefix("data: ")).filter_map(|j| serde_json::from_str::<Value>(j).ok()).last().ok_or("No SSE data".to_string())
+    text.lines().filter_map(|l| l.strip_prefix("data: ")).filter_map(|j| serde_json::from_str::<Value>(j).ok()).next_back().ok_or("No SSE data".to_string())
 }
 
 fn extract_text(resp: &Value) -> Result<String, String> {

@@ -21,9 +21,11 @@ impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self { role: "system".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
     }
+    #[allow(dead_code)]
     pub fn assistant(content: Option<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         Self { role: "assistant".into(), content, tool_calls, tool_call_id: None, name: None }
     }
+    #[allow(dead_code)]
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self { role: "tool".into(), content: Some(content.into()), tool_calls: None, tool_call_id: Some(tool_call_id.into()), name: None }
     }
@@ -77,28 +79,29 @@ pub struct ChatRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatResponse {
-    pub id: Option<String>,
-    pub object: Option<String>,
-    pub created: Option<u64>,
-    pub model: Option<String>,
+    #[allow(dead_code)] pub id: Option<String>,
+    #[allow(dead_code)] pub object: Option<String>,
+    #[allow(dead_code)] pub created: Option<u64>,
+    #[allow(dead_code)] pub model: Option<String>,
     pub choices: Vec<Choice>,
-    pub usage: Option<Usage>,
+    #[allow(dead_code)] pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
-    pub index: u32,
+    #[allow(dead_code)] pub index: u32,
     pub message: ChatMessage,
-    pub finish_reason: Option<String>,
+    #[allow(dead_code)] pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Usage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
+    #[allow(dead_code)] pub prompt_tokens: u32,
+    #[allow(dead_code)] pub completion_tokens: u32,
+    #[allow(dead_code)] pub total_tokens: u32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamChunk {
     pub id: Option<String>,
@@ -106,6 +109,7 @@ pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamChoice {
     pub index: u32,
@@ -113,6 +117,7 @@ pub struct StreamChoice {
     pub finish_reason: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Delta {
     pub content: Option<String>,
@@ -130,6 +135,7 @@ pub struct ApiError {
 pub struct ApiErrorDetail {
     pub message: String,
     #[serde(rename = "type")]
-    pub error_type: Option<String>,
-    pub code: Option<Value>,
+    #[allow(dead_code)] pub error_type: Option<String>,
+    #[allow(dead_code)] pub code: Option<Value>,
 }
+

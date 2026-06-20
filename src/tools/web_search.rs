@@ -125,7 +125,7 @@ fn parse_ddg_results(html: &str, count: usize) -> Result<Vec<SearchResult>, Stri
     Ok(results)
 }
 
-fn extract_between<'a>(input: &'a str, start: &str, end: &str) -> Option<String> {
+fn extract_between(input: &str, start: &str, end: &str) -> Option<String> {
     let pos = input.find(start)?;
     let after = &input[pos + start.len()..];
     if end.is_empty() {

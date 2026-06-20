@@ -28,7 +28,7 @@ pub struct LlmConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            allowed_directories: vec!["/".to_string()],
+            allowed_directories: vec!["~/".to_string(), "/tmp".to_string()],
             blocked_commands: HashSet::from([
                 "sudo".into(), "su".into(), "passwd".into(),
                 "shutdown".into(), "reboot".into(), "init".into(),
@@ -66,10 +66,12 @@ pub fn get() -> AppConfig {
     CONFIG.lock().unwrap().clone()
 }
 
+#[allow(dead_code)]
 pub fn set(cfg: AppConfig) {
     *CONFIG.lock().unwrap() = cfg;
 }
 
+#[allow(dead_code)]
 pub fn update<F>(f: F) where F: FnOnce(&mut AppConfig) {
-    f(&mut *CONFIG.lock().unwrap());
+    f(&mut CONFIG.lock().unwrap());
 }

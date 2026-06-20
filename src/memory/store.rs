@@ -159,7 +159,7 @@ impl MemoryStore {
             .filter(|(s, _)| *s > 0)
             .collect();
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         scored.truncate(query.limit);
 
         scored.into_iter().map(|(_, item)| item.clone()).collect()
@@ -175,7 +175,7 @@ impl MemoryStore {
 
     pub fn get_recent(&self, limit: usize) -> Vec<MemoryItem> {
         let mut items = self.get_all();
-        items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        items.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         items.truncate(limit);
         items
     }

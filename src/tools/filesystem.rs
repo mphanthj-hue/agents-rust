@@ -91,7 +91,7 @@ pub fn handle_read_file(args: Value) -> Result<ToolResult, String> {
 
     let (start, end) = if offset < 0 {
         let tail = (-offset) as usize;
-        let start = if tail >= total { 0 } else { total - tail };
+        let start = total.saturating_sub(tail);
         (start, total)
     } else {
         let start = offset as usize;
@@ -357,7 +357,7 @@ fn glob_match(pattern: &str, name: &str) -> bool {
             match pat_chars[i - 1] {
                 '*' => dp[i][j] = dp[i - 1][j] || dp[i][j - 1],
                 '?' => dp[i][j] = dp[i - 1][j - 1],
-                c => dp[i][j] = dp[i - 1][j - 1] && c.to_ascii_lowercase() == name_chars[j - 1].to_ascii_lowercase(),
+                c => dp[i][j] = dp[i - 1][j - 1] && c.eq_ignore_ascii_case(&name_chars[j - 1]),
             }
         }
     }

@@ -9,6 +9,12 @@ pub struct Orchestrator {
     client: LlmClient,
 }
 
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Orchestrator {
     pub fn new() -> Self {
         Self {
@@ -34,18 +40,22 @@ Yêu cầu:
             task, available_tools.join(", ")
         );
 
-        let response = self.client.chat(
+        let response = self.client.chat_with_intelligent_fallback(
             vec![
                 crate::llm::types::ChatMessage::system("Bạn là AI phân tích task thành subtask. Chỉ trả về JSON."),
                 crate::llm::types::ChatMessage::user(&prompt),
-            ]
+            ],
+            Vec::new(),
+            None,
         ).await?;
 
         let content = response.choices.first()
             .and_then(|c| c.message.content.as_deref())
             .ok_or("LLM không trả về nội dung")?;
 
-        let sub_tasks: Vec<SubTask> = serde_json::from_str(content)
+        let content = strip_markdown_fences(content);
+
+        let sub_tasks: Vec<SubTask> = serde_json::from_str(&content)
             .map_err(|e| format!("Không parse được subtasks từ LLM: {} — content: {}", e, content))?;
 
         let count = sub_tasks.len();
@@ -53,6 +63,17 @@ Yêu cầu:
             sub_tasks,
             summary: format!("Đã phân tích task thành {} subtask", count),
         })
+    }
+
+    fn strip_markdown_fences(content: &str) -> String {
+        let trimmed = content.trim();
+        if trimmed.starts_with("```json") && trimmed.ends_with("```") {
+            trimmed[7..trimmed.len()-3].trim().to_string()
+        } else if trimmed.starts_with("```") && trimmed.ends_with("```") {
+            trimmed[3..trimmed.len()-3].trim().to_string()
+        } else {
+            trimmed.to_string()
+        }
     }
 
     /// Execute subtasks in parallel using tokio::spawn
@@ -88,6 +109,7 @@ Yêu cầu:
     }
 
     /// Execute subtasks sequentially
+    #[allow(dead_code)]
     pub async fn execute_sequential(&self, plan: OrchestrationPlan, config: WorkerConfig) -> Vec<SubTaskResult> {
         let mut results = Vec::new();
 
@@ -158,11 +180,13 @@ Hãy tổng hợp kết quả cuối cùng thành câu trả lời mạch lạc,
             task, parts.join("\n---\n")
         );
 
-        let response = self.client.chat(
+        let response = self.client.chat_with_intelligent_fallback(
             vec![
                 crate::llm::types::ChatMessage::system("Bạn là AI tổng hợp kết quả từ các agent con."),
                 crate::llm::types::ChatMessage::user(&prompt),
-            ]
+            ],
+            Vec::new(),
+            None,
         ).await?;
 
         Ok(response.choices.first()

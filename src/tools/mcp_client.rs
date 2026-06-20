@@ -255,7 +255,7 @@ async fn call_local(cmd: &[&str], tool: &str, args: Value) -> Result<ToolResult,
     reader.read_line(&mut line)
         .map_err(|e| format!("Failed to read stdout: {}", e))?;
 
-    drop(stdin);
+    drop(child.stdin.take());
     let _ = child.wait();
 
     let call_resp: Value = serde_json::from_str(&line)

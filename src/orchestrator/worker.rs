@@ -77,7 +77,7 @@ impl Worker {
             iteration += 1;
 
             let response = self.client
-                .chat_with_fallback(self.messages.clone(), self.tools.clone())
+                .chat_with_intelligent_fallback(self.messages.clone(), self.tools.clone(), None)
                 .await?;
 
             let choice = response.choices.into_iter().next()
@@ -99,7 +99,7 @@ impl Worker {
                             self.messages.push(ChatMessage::tool(&tc.id, &output));
                         }
                         Err(e) => {
-                            self.messages.push(ChatMessage::tool(&tc.id, &format!("Error: {}", e)));
+                            self.messages.push(ChatMessage::tool(&tc.id, format!("Error: {}", e)));
                         }
                     }
                 }

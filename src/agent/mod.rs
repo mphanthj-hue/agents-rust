@@ -4,12 +4,20 @@ use crate::tools;
 use crate::config;
 use serde_json::Value;
 
+#[allow(dead_code)]
 pub struct Agent {
     client: LlmClient,
     tools: Vec<ToolDefinition>,
     messages: Vec<ChatMessage>,
     used_fallback: bool,
     active_model: String,
+    max_messages: usize,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Agent {
@@ -40,11 +48,13 @@ impl Agent {
             messages: Vec::new(),
             used_fallback: false,
             active_model: initial_model,
+            max_messages: 20,
         }
     }
 
     pub fn add_system_prompt(&mut self, prompt: &str) {
         self.messages.push(ChatMessage::system(prompt));
+        self.trim_messages();
     }
 
     pub fn add_user_message(&mut self, text: &str) {
@@ -55,9 +65,19 @@ impl Agent {
             self.active_model = vision;
         }
         self.messages.push(ChatMessage::user(text));
+        self.trim_messages();
     }
 
+    fn trim_messages(&mut self) {
+        if self.messages.len() > self.max_messages {
+            let excess = self.messages.len() - self.max_messages;
+            self.messages.drain(0..excess);
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn active_model(&self) -> &str { &self.active_model }
+    #[allow(dead_code)]
     pub fn used_fallback(&self) -> bool { self.used_fallback }
 
     pub async fn run(&mut self) -> Result<String, String> {
@@ -95,15 +115,18 @@ impl Agent {
             if has_tool_calls {
                 let tool_calls = choice.message.tool_calls.unwrap();
                 self.messages.push(ChatMessage::assistant(None, Some(tool_calls.clone())));
+                self.trim_messages();
 
                 for tc in &tool_calls {
-                    let result = self.execute_tool(&tc.function.name, &tc.function.arguments);
+                    let result = self.execute_tool(&tc.function.name, &tc.function.arguments).await;
                     match result {
                         Ok(output) => {
                             self.messages.push(ChatMessage::tool(&tc.id, &output));
+                            self.trim_messages();
                         }
                         Err(e) => {
-                            self.messages.push(ChatMessage::tool(&tc.id, &format!("Error: {}", e)));
+                            self.messages.push(ChatMessage::tool(&tc.id, format!("Error: {}", e)));
+                            self.trim_messages();
                         }
                     }
                 }
@@ -115,14 +138,16 @@ impl Agent {
         }
     }
 
-    fn execute_tool(&self, name: &str, arguments: &str) -> Result<String, String> {
+    async fn execute_tool(&self, name: &str, arguments: &str) -> Result<String, String> {
         let args: Value = serde_json::from_str(arguments)
             .map_err(|e| format!("Failed to parse tool arguments: {}", e))?;
 
         let handler = tools::get_tool_handler(name)
             .ok_or_else(|| format!("Unknown tool: {}", name))?;
 
-        let result = handler(args)?;
+        let result = tokio::task::spawn_blocking(move || handler(args))
+            .await
+            .map_err(|e| format!("Tool execution panicked: {}", e))??;
 
         let text = result.content.into_iter()
             .map(|c| match c {

@@ -182,15 +182,13 @@ impl LlmRouter {
 
             match self.chat_direct(name, messages.clone(), tools.clone()).await {
                 Ok(resp) => {
-                    self.circuits.write().await
-                        .get_mut(name)
-                        .map(|c| c.record_success());
+                    if let Some(c) = self.circuits.write().await
+                        .get_mut(name) { c.record_success() }
                     return Ok(resp);
                 }
                 Err(e) => {
-                    self.circuits.write().await
-                        .get_mut(name)
-                        .map(|c| c.record_failure());
+                    if let Some(c) = self.circuits.write().await
+                        .get_mut(name) { c.record_failure() }
                     let label = if idx == 0 { "primary" } else { name };
                     errors.push(format!("{}: {}", label, e));
                 }
@@ -262,10 +260,12 @@ impl LlmRouter {
             .map_err(|e| format!("Parse response failed: {} - body: {}", e, &body[..body.len().min(200)]))
     }
 
+    #[allow(dead_code)]
     pub fn list_models(&self) -> Vec<String> {
         self.model_map.keys().cloned().collect()
     }
 
+    #[allow(dead_code)]
     pub fn get_model_config(&self, name: &str) -> Option<&ModelConfig> {
         self.model_map.get(name)
     }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use reqwest::Client as HttpClient;
 use crate::config;
 use crate::llm::types::*;
@@ -9,9 +10,17 @@ pub struct LlmClient {
     base_url: String,
     api_key: String,
     model: String,
+    #[allow(dead_code)]
     fallback_models: Vec<String>,
+    #[allow(dead_code)]
     vision_model: String,
     router: Option<Arc<LlmRouter>>,
+}
+
+impl Default for LlmClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LlmClient {
@@ -19,7 +28,10 @@ impl LlmClient {
         let cfg = config::get();
         let router = LlmRouter::from_default().ok().map(Arc::new);
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .unwrap_or_else(|e| { eprintln!("[llm] HTTP client error: {}", e); HttpClient::new() }),
             base_url: cfg.llm.base_url,
             api_key: cfg.llm.api_key,
             model: cfg.llm.model,
@@ -43,30 +55,40 @@ impl LlmClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn model(&self) -> &str { &self.model }
 
+    #[allow(dead_code)]
     pub fn vision_model(&self) -> &str { &self.vision_model }
 
+    #[allow(dead_code)]
     pub fn has_vision(prompt: &str) -> bool {
         let lower = prompt.to_lowercase();
-        let image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"];
-        let image_keywords = ["hình ảnh", "ảnh", "picture", "image", "photo", "screenshot"];
-
-        for ext in &image_extensions {
-            if lower.contains(ext) { return true; }
-        }
-        for kw in &image_keywords {
-            if lower.contains(kw) { return true; }
-        }
-
-        // Check for base64 image data in prompt
-        if lower.contains("base64") && (lower.contains("image/") || lower.contains("data:image")) {
+        
+        if lower.contains("data:image/") {
             return true;
         }
-
+        
+        if lower.contains("base64") && lower.contains("image/") {
+            return true;
+        }
+        
+        let image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"];
+        for ext in &image_extensions {
+            if lower.contains(&format!("{}", ext)) {
+                if let Some(pos) = lower.find(ext) {
+                    let after = &lower[pos..];
+                    if after.chars().next().map(|c| c.is_alphanumeric() || c == '.' || c == '?' || c == '#').unwrap_or(false) {
+                        return true;
+                    }
+                }
+            }
+        }
+        
         false
     }
 
+    #[allow(dead_code)]
     pub fn select_model(prompt: &str, preferred: Option<&str>) -> String {
         if let Some(m) = preferred {
             return m.to_string();
@@ -79,6 +101,7 @@ impl LlmClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_model(&mut self, model: &str) {
         self.model = model.to_string();
     }
@@ -146,17 +169,16 @@ impl LlmClient {
         self.send_request(&self.build_request_with_tools(messages, tools)).await
     }
 
+    #[allow(dead_code)]
     pub async fn chat_with_fallback(&self, messages: Vec<ChatMessage>, tools: Vec<ToolDefinition>) -> Result<ChatResponse, String> {
         let mut errors: Vec<String> = Vec::new();
 
-        // Try primary model
         let primary_req = self.build_request_with_tools(messages.clone(), tools.clone());
         match self.send_request(&primary_req).await {
             Ok(r) => return Ok(r),
             Err(e) => errors.push(format!("primary: {}", e)),
         }
 
-        // Try fallback models — reuse params from a single base request
         let base = self.build_request_with_tools(messages.clone(), tools.clone());
         for fb in &self.fallback_models {
             let req = ChatRequest {
@@ -204,6 +226,7 @@ impl LlmClient {
         self
     }
 
+    #[allow(dead_code)]
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,
@@ -243,8 +266,7 @@ impl LlmClient {
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
-            loop {
-                let Some(line_end) = buffer.find('\n') else { break };
+            while let Some(line_end) = buffer.find('\n') {
                 let line = buffer[..line_end].trim().to_string();
                 buffer = buffer[line_end + 1..].to_string();
 

@@ -2,20 +2,25 @@ use std::collections::HashMap;
 use std::sync::{Mutex, LazyLock, Arc};
 use std::process::{Stdio, Child};
 use std::thread;
+use std::time::{Duration, Instant};
 use std::io::{BufRead, BufReader, Read, Write};
 use serde_json::{json, Value};
 use crate::mcp::types::{ToolDefinition, ToolResult, ToolContent};
 use crate::config;
+use shellwords;
 
 static SESSIONS: LazyLock<Mutex<HashMap<String, SessionState>>> = LazyLock::new(|| {
     Mutex::new(HashMap::new())
 });
+
+static CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 
 struct SessionState {
     child: Arc<Mutex<Child>>,
     stdout_lines: Arc<Mutex<Vec<String>>>,
     stderr_lines: Arc<Mutex<Vec<String>>>,
     finished: Arc<Mutex<bool>>,
+    finished_at: Arc<Mutex<Option<Instant>>>,
 }
 
 fn text_result(text: impl Into<String>) -> Result<ToolResult, String> {
@@ -25,6 +30,7 @@ fn text_result(text: impl Into<String>) -> Result<ToolResult, String> {
     })
 }
 
+#[allow(dead_code)]
 fn error_result(text: impl Into<String>) -> Result<ToolResult, String> {
     Ok(ToolResult {
         content: vec![ToolContent::Text { text: text.into() }],
@@ -34,12 +40,138 @@ fn error_result(text: impl Into<String>) -> Result<ToolResult, String> {
 
 fn check_blocked(command: &str) -> Result<(), String> {
     let cfg = config::get();
+    
+    let commands = parse_shell_commands(command);
+    
     for blocked in &cfg.blocked_commands {
-        if command.starts_with(blocked) || command.contains(&format!(" {} ", blocked)) {
-            return Err(format!("Command '{}' is blocked.", command));
+        for cmd in &commands {
+            if cmd == blocked {
+                return Err(format!("Command blocked: {}", blocked));
+            }
         }
     }
+    
+    if has_shell_metacharacters(command) {
+        return Err("Command contains shell metacharacters that could bypass blocking".into());
+    }
+    
     Ok(())
+}
+
+fn parse_shell_commands(command: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+    let chars: Vec<char> = command.chars().collect();
+    
+    for (i, &ch) in chars.iter().enumerate() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        
+        match ch {
+            '\\' => {
+                if in_double_quote {
+                    escaped = true;
+                    current.push(ch);
+                } else {
+                    escaped = true;
+                    current.push(ch);
+                }
+            }
+            '\'' => {
+                if !in_double_quote {
+                    in_single_quote = !in_single_quote;
+                }
+                current.push(ch);
+            }
+            '"' => {
+                if !in_single_quote {
+                    in_double_quote = !in_double_quote;
+                }
+                current.push(ch);
+            }
+            ';' | '|' | '&' => {
+                if !in_single_quote && !in_double_quote {
+                    if !current.trim().is_empty() {
+                        commands.push(current.trim().to_string());
+                    }
+                    current.clear();
+                    if i + 1 < chars.len() && (chars[i + 1] == '|' || chars[i + 1] == '&') {
+                        current.push(ch);
+                        current.push(chars[i + 1]);
+                        continue;
+                    }
+                    continue;
+                }
+                current.push(ch);
+            }
+            '$' => {
+                if !in_single_quote && i + 1 < chars.len() && chars[i + 1] == '(' {
+                    if !current.trim().is_empty() {
+                        commands.push(current.trim().to_string());
+                    }
+                    current.clear();
+                    current.push('$');
+                    current.push('(');
+                    continue;
+                }
+                current.push(ch);
+            }
+            '`' => {
+                if !in_single_quote && !in_double_quote {
+                    if !current.trim().is_empty() {
+                        commands.push(current.trim().to_string());
+                    }
+                    current.clear();
+                    current.push('`');
+                    continue;
+                }
+                current.push(ch);
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    
+    if !current.trim().is_empty() {
+        commands.push(current.trim().to_string());
+    }
+    
+    commands.iter()
+        .filter_map(|c| shellwords::split(c).ok())
+        .flatten()
+        .map(|s| s.split_whitespace().next().unwrap_or("").to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn has_shell_metacharacters(command: &str) -> bool {
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+    
+    for ch in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        
+        match ch {
+            '\\' => escaped = true,
+            '\'' => if !in_double_quote { in_single_quote = !in_single_quote },
+            '"' => if !in_single_quote { in_double_quote = !in_double_quote },
+            ';' | '|' | '&' | '$' | '`' => if !in_single_quote && !in_double_quote { return true },
+            _ => {}
+        }
+    }
+    
+    false
 }
 
 pub fn start_process_definition() -> ToolDefinition {
@@ -59,109 +191,108 @@ pub fn start_process_definition() -> ToolDefinition {
 }
 
 pub fn handle_start_process(args: Value) -> Result<ToolResult, String> {
-    let command = args.get("command")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing: command")?;
-    let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-    let timeout = args.get("timeout").and_then(|v| v.as_i64()).unwrap_or(30);
+    tokio::task::block_in_place(|| {
+        let command = args.get("command")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing: command")?;
+        let session_id = args.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+        let timeout = args.get("timeout").and_then(|v| v.as_i64()).unwrap_or(30);
 
-    check_blocked(command)?;
+        check_blocked(command)?;
 
-    // If no session_id, run synchronously with optional timeout
-    if session_id.is_empty() {
-        return run_sync(command, timeout);
-    }
+        if session_id.is_empty() {
+            return run_sync(command, timeout);
+        }
 
-    // With session_id: spawn in background
-    let cfg = config::get();
-    let shell = &cfg.default_shell;
+        let cfg = config::get();
+        let shell = &cfg.default_shell;
 
-    let mut child = std::process::Command::new(shell)
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn: {}", e))?;
+        let mut child = std::process::Command::new(shell)
+            .arg("-c")
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {}", e))?;
 
-    let child_stdout = child.stdout.take().ok_or("No stdout")?;
-    let child_stderr = child.stderr.take().ok_or("No stderr")?;
+        let child_stdout = child.stdout.take().ok_or("No stdout")?;
+        let child_stderr = child.stderr.take().ok_or("No stderr")?;
 
-    let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let finished: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let finished: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let finished_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
-    // Reader threads
-    let sl = Arc::clone(&stdout_lines);
-    thread::spawn(move || read_lines(child_stdout, sl));
-    let sl = Arc::clone(&stderr_lines);
-    thread::spawn(move || read_lines(child_stderr, sl));
+        let sl = Arc::clone(&stdout_lines);
+        thread::spawn(move || read_lines(child_stdout, sl));
+        let sl = Arc::clone(&stderr_lines);
+        thread::spawn(move || read_lines(child_stderr, sl));
 
-    let child = Arc::new(Mutex::new(child));
-    {
-        let child = Arc::clone(&child);
-        let fin = Arc::clone(&finished);
-        thread::spawn(move || {
-            loop {
-                match child.lock().unwrap().try_wait() {
-                    Ok(Some(_)) => {
-                        *fin.lock().unwrap() = true;
-                        return;
+        let child = Arc::new(Mutex::new(child));
+        {
+            let child = Arc::clone(&child);
+            let fin = Arc::clone(&finished);
+            let fin_at = Arc::clone(&finished_at);
+            thread::spawn(move || {
+                loop {
+                    match child.lock().unwrap().try_wait() {
+                        Ok(Some(_)) => {
+                            *fin.lock().unwrap() = true;
+                            *fin_at.lock().unwrap() = Some(Instant::now());
+                            return;
+                        }
+                        Ok(None) => thread::sleep(std::time::Duration::from_millis(100)),
+                        Err(_) => return,
                     }
-                    Ok(None) => thread::sleep(std::time::Duration::from_millis(100)),
-                    Err(_) => return,
                 }
-            }
-        });
-    }
+            });
+        }
 
-    let state = SessionState {
-        child,
-        stdout_lines,
-        stderr_lines,
-        finished,
-    };
+        let state = SessionState {
+            child,
+            stdout_lines,
+            stderr_lines,
+            finished,
+            finished_at,
+        };
 
-    SESSIONS.lock().map_err(|e| format!("Lock: {}", e))?
-        .insert(session_id.to_string(), state);
+        SESSIONS.lock().map_err(|e| format!("Lock: {}", e))?
+            .insert(session_id.to_string(), state);
 
-    // Give it a moment, then return initial output
-    thread::sleep(std::time::Duration::from_millis(200));
-    let out = collect_output(session_id, 0, 100)?;
+        thread::sleep(std::time::Duration::from_millis(200));
+        let out = collect_output(session_id, 0, 100)?;
 
-    text_result(format!("Started process '{}' (session: {})\n\n{}", command, session_id, out))
+        text_result(format!("Started process '{}' (session: {})\n\n{}", command, session_id, out))
+    })
 }
 
 fn run_sync(command: &str, timeout_secs: i64) -> Result<ToolResult, String> {
     let cfg = config::get();
     let shell = &cfg.default_shell;
 
-    let output = if timeout_secs > 0 {
-        // Run with timeout via a thread
-        let cmd = command.to_string();
-        let sh = shell.clone();
-        let handle = thread::spawn(move || {
-            std::process::Command::new(sh)
-                .arg("-c")
-                .arg(&cmd)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-        });
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cmd = command.to_string();
+    let sh = shell.clone();
 
-        match handle.join() {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => return error_result(format!("Failed to execute: {}", e)),
-            Err(_) => return error_result(String::from("Command thread panicked")),
-        }
-    } else {
-        std::process::Command::new(shell)
+    thread::spawn(move || {
+        let result = std::process::Command::new(sh)
             .arg("-c")
-            .arg(command)
+            .arg(&cmd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .output();
+        let _ = tx.send(result);
+    });
+
+    let output = if timeout_secs > 0 {
+        let timeout = std::time::Duration::from_secs(timeout_secs as u64);
+        rx.recv_timeout(timeout)
+            .map_err(|_| format!("Command timed out after {}s", timeout_secs))?
+            .map_err(|e| format!("Failed to execute: {}", e))?
+    } else {
+        rx.recv()
+            .map_err(|_| "Command thread error".to_string())?
             .map_err(|e| format!("Failed to execute: {}", e))?
     };
 
@@ -184,10 +315,8 @@ fn run_sync(command: &str, timeout_secs: i64) -> Result<ToolResult, String> {
 
 fn read_lines<R: Read + Send + 'static>(reader: R, lines: Arc<Mutex<Vec<String>>>) {
     let buf = BufReader::new(reader);
-    for line in buf.lines() {
-        if let Ok(l) = line {
-            lines.lock().unwrap().push(l);
-        }
+    for l in buf.lines().map_while(Result::ok) {
+        lines.lock().unwrap().push(l);
     }
 }
 
@@ -211,7 +340,7 @@ fn collect_output(session_id: &str, offset: i64, length: i64) -> Result<String, 
     let total = all_lines.len();
     let start = if offset < 0 {
         let tail = (-offset) as usize;
-        if tail >= total { 0 } else { total - tail }
+        total.saturating_sub(tail)
     } else {
         offset as usize
     };
@@ -310,6 +439,11 @@ pub fn force_terminate_definition() -> ToolDefinition {
     }
 }
 
+#[allow(dead_code)]
+pub fn init() {
+    start_cleanup_thread();
+}
+
 pub fn handle_force_terminate(args: Value) -> Result<ToolResult, String> {
     let session_id = args.get("session_id")
         .and_then(|v| v.as_str())
@@ -322,5 +456,39 @@ pub fn handle_force_terminate(args: Value) -> Result<ToolResult, String> {
     let _ = child.kill();
     let _ = child.wait();
 
+    *state.finished_at.lock().unwrap() = Some(Instant::now());
+
     text_result(format!("Process '{}' terminated", session_id))
+}
+
+fn cleanup_finished_sessions() {
+    let mut sessions = SESSIONS.lock().unwrap();
+    let mut to_remove = Vec::new();
+    let now = Instant::now();
+    let ttl = Duration::from_secs(300); // 5 minutes TTL
+
+    for (session_id, state) in sessions.iter() {
+        let finished_at = state.finished_at.lock().unwrap();
+        if let Some(finished_time) = *finished_at {
+            if now.duration_since(finished_time) > ttl {
+                to_remove.push(session_id.clone());
+            }
+        }
+    }
+
+    for session_id in to_remove {
+        let state = sessions.remove(&session_id).unwrap();
+        let mut child = state.child.lock().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn start_cleanup_thread() {
+    thread::spawn(|| {
+        loop {
+            thread::sleep(CLEANUP_INTERVAL);
+            cleanup_finished_sessions();
+        }
+    });
 }

@@ -29,6 +29,12 @@ pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
 }
 
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillRegistry {
     pub fn new() -> Self {
         Self {
@@ -50,7 +56,7 @@ impl SkillRegistry {
         for entry in entries {
             let entry = entry.map_err(|e| format!("Entry lỗi: {}", e))?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "md") {
+            if path.extension().is_some_and(|ext| ext == "md") {
                 match Skill::load(&path) {
                     Ok(skill) => {
                         let name = skill.name.clone();

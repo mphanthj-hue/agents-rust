@@ -39,15 +39,16 @@ impl Default for WorkerConfig {
 
 #[derive(Debug, Clone)]
 pub struct AggregatedResult {
-    pub task: String,
+    #[allow(dead_code)] pub task: String,
     pub total: usize,
     pub successes: usize,
-    pub failures: usize,
+    #[allow(dead_code)] pub failures: usize,
     pub results: Vec<SubTaskResult>,
     pub synthesis: String,
 }
 
 impl AggregatedResult {
+    #[allow(dead_code)]
     pub fn is_all_ok(&self) -> bool {
         self.failures == 0
     }

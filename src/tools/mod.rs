@@ -60,4 +60,5 @@ pub fn get_all_tool_definitions() -> Vec<ToolDefinition> {
 
 pub fn get_tool_handler(name: &str) -> Option<ToolHandler> {
     all_entries().iter().find(|e| e.definition.name == name).map(|e| e.handler)
+        .or_else(|| crate::plugin::get_plugin_tool_handler(name))
 }

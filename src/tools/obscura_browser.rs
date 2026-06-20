@@ -90,7 +90,7 @@ impl CdpClient {
             cmd["sessionId"] = json!(sid);
         }
 
-        let msg = Message::Text(serde_json::to_string(&cmd).unwrap().into());
+        let msg = Message::Text(serde_json::to_string(&cmd).unwrap());
         self.write
             .lock()
             .await
@@ -381,6 +381,5 @@ static BROWSER: OnceCell<Arc<ObscuraBrowser>> = OnceCell::const_new();
 pub async fn get_browser() -> Result<Arc<ObscuraBrowser>, String> {
     BROWSER
         .get_or_try_init(|| async { ObscuraBrowser::new().await.map(Arc::new) })
-        .await
-        .map(|b| b.clone())
+        .await.cloned()
 }

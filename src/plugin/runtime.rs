@@ -4,7 +4,9 @@ use serde_json::Value;
 use crate::mcp::types::{ToolDefinition, ToolResult};
 
 pub struct WasmPlugin {
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub version: String,
     pub tools: Vec<ToolDefinition>,
     engine: Engine,
@@ -13,6 +15,29 @@ pub struct WasmPlugin {
 }
 
 fn read_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<String, String> {
+    read_length_prefixed_string(store, memory, ptr)
+        .or_else(|_| read_null_terminated_string(store, memory, ptr))
+}
+
+fn read_length_prefixed_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<(String, i32), String> {
+    let mut len_bytes = [0u8; 4];
+    memory.read(store, ptr as usize, &mut len_bytes)
+        .map_err(|e| format!("memory read error: {}", e))?;
+    let len = u32::from_le_bytes(len_bytes) as i32;
+    
+    if len < 0 || len > 1024 * 1024 {
+        return Err("Invalid length prefix".into());
+    }
+    
+    let mut bytes = vec![0u8; len as usize];
+    memory.read(store, (ptr + 4) as usize, &mut bytes)
+        .map_err(|e| format!("memory read error: {}", e))?;
+    
+    let string = String::from_utf8(bytes).map_err(|e| format!("UTF-8 error: {}", e))?;
+    Ok((string, len + 4))
+}
+
+fn read_null_terminated_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<(String, i32), String> {
     let mut offset = ptr as usize;
     let mut bytes = Vec::new();
     loop {
@@ -23,8 +48,13 @@ fn read_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<String, S
         }
         bytes.push(byte[0]);
         offset += 1;
+        if bytes.len() > 1024 * 1024 {
+            return Err("String too long".into());
+        }
     }
-    String::from_utf8(bytes).map_err(|e| format!("UTF-8 error: {}", e))
+    let string = String::from_utf8(bytes).map_err(|e| format!("UTF-8 error: {}", e))?;
+    let total_len = (offset - ptr as usize) as i32 + 1;
+    Ok((string, total_len))
 }
 
 impl WasmPlugin {
@@ -118,11 +148,11 @@ impl WasmPlugin {
         let result_ptr = execute_fn.call(&mut store, (name_ptr, name_bytes.len() as i32, args_ptr, args_bytes.len() as i32))
             .map_err(|e| format!("plugin_execute call error: {}", e))?;
 
-        let result_str = read_string(&store, &memory, result_ptr)?;
+        let (result_str, result_len) = read_string(&store, &memory, result_ptr)?;
 
         dealloc_fn.call(&mut store, (name_ptr, name_bytes.len() as i32)).ok();
         dealloc_fn.call(&mut store, (args_ptr, args_bytes.len() as i32)).ok();
-        dealloc_fn.call(&mut store, (result_ptr, result_str.len() as i32)).ok();
+        dealloc_fn.call(&mut store, (result_ptr, result_len)).ok();
 
         let result: ToolResult = serde_json::from_str(&result_str)
             .map_err(|e| format!("invalid result JSON from plugin: {}", e))?;

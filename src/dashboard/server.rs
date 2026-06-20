@@ -19,6 +19,7 @@ impl DashboardServer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn state(&self) -> Arc<DashboardState> {
         self.state.clone()
     }
@@ -85,7 +86,7 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, state: Arc<Dashb
     let (mut write, _read) = ws_stream.split();
 
     while let Ok(msg) = rx.recv().await {
-        if write.send(Message::Text(msg.into())).await.is_err() {
+        if write.send(Message::Text(msg)).await.is_err() {
             break;
         }
     }

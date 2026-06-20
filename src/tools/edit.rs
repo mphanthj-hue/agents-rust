@@ -78,7 +78,7 @@ pub fn handle_edit_block(args: Value) -> Result<ToolResult, String> {
 
     if count > 0 && count == expected {
         let new_content = content.replace(old_string, new_string);
-        let limit = config::get().file_write_line_limit as usize;
+        let limit = config::get().file_write_line_limit;
 
         let new_lines = new_content.lines().count();
         if new_lines > limit {
@@ -92,9 +92,9 @@ pub fn handle_edit_block(args: Value) -> Result<ToolResult, String> {
             let context = 10;
             let lines: Vec<&str> = new_content.lines().collect();
             let total = lines.len();
-            let preview_start = if start_line > context { start_line - context } else { 0 };
+            let preview_start = start_line.saturating_sub(context);
             let preview_end = std::cmp::min(start_line + new_string.lines().count() + context, total);
-            let preview: Vec<&str> = lines[preview_start..preview_end].iter().copied().collect();
+            let preview: Vec<&str> = lines[preview_start..preview_end].to_vec();
             let remaining = total - preview_end;
 
             return Ok(ToolResult {

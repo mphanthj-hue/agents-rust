@@ -36,6 +36,7 @@ base64 = "0.22"
 # MCP protocol — official Rust SDK
 rmcp = { version = "1.7", default-features = false, features = ["server", "transport-io", "transport-async-rw"] }
 chrono = "0.4"
+shellwords = "1"
 
 # WASM plugin support
 wasmtime = "45"

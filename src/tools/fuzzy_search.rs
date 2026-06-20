@@ -5,8 +5,10 @@ const FUZZY_THRESHOLD: f64 = 0.7;
 #[derive(Debug)]
 pub struct FuzzyMatch {
     pub start: usize,
+    #[allow(dead_code)]
     pub end: usize,
     pub value: String,
+    #[allow(dead_code)]
     pub distance: usize,
     pub similarity: f64,
 }
@@ -54,7 +56,7 @@ pub fn find_closest(text: &str, query: &str) -> FuzzyMatch {
 
     // Refine: slide window to find better boundaries
     let refine_range = std::cmp::max(query_len * 2, best_end - best_start);
-    let refine_start = if best_start > refine_range { best_start - refine_range } else { 0 };
+    let refine_start = best_start.saturating_sub(refine_range);
     let refine_end = std::cmp::min(best_end + refine_range, text_chars.len());
 
     for i in refine_start..=refine_end.saturating_sub(query_len) {
