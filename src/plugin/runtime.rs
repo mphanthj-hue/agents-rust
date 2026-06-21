@@ -14,7 +14,7 @@ pub struct WasmPlugin {
     linker: Linker<()>,
 }
 
-fn read_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<String, String> {
+fn read_string(store: &Store<()>, memory: &Memory, ptr: i32) -> Result<(String, i32), String> {
     read_length_prefixed_string(store, memory, ptr)
         .or_else(|_| read_null_terminated_string(store, memory, ptr))
 }
@@ -76,25 +76,25 @@ impl WasmPlugin {
         let memory = instance.get_memory(&mut store, "memory")
             .ok_or_else(|| "WASM plugin must export 'memory'".to_string())?;
 
-        let name = {
-            let name_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_name")
-                .map_err(|e| format!("plugin_name missing: {}", e))?;
-            let ptr = name_fn.call(&mut store, ()).map_err(|e| format!("plugin_name call error: {}", e))?;
-            read_string(&store, &memory, ptr)?
-        };
+            let name = {
+                let name_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_name")
+                    .map_err(|e| format!("plugin_name missing: {}", e))?;
+                let ptr = name_fn.call(&mut store, ()).map_err(|e| format!("plugin_name call error: {}", e))?;
+                read_string(&store, &memory, ptr)?.0
+            };
 
-        let version = {
-            let ver_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_version")
-                .map_err(|e| format!("plugin_version missing: {}", e))?;
-            let ptr = ver_fn.call(&mut store, ()).map_err(|e| format!("plugin_version call error: {}", e))?;
-            read_string(&store, &memory, ptr)?
-        };
+            let version = {
+                let ver_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_version")
+                    .map_err(|e| format!("plugin_version missing: {}", e))?;
+                let ptr = ver_fn.call(&mut store, ()).map_err(|e| format!("plugin_version call error: {}", e))?;
+                read_string(&store, &memory, ptr)?.0
+            };
 
-        let tools = {
-            let desc_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_describe")
-                .map_err(|e| format!("plugin_describe missing: {}", e))?;
-            let ptr = desc_fn.call(&mut store, ()).map_err(|e| format!("plugin_describe call error: {}", e))?;
-            let json_str = read_string(&store, &memory, ptr)?;
+            let tools = {
+                let desc_fn = instance.get_typed_func::<(), i32>(&mut store, "plugin_describe")
+                    .map_err(|e| format!("plugin_describe missing: {}", e))?;
+                let ptr = desc_fn.call(&mut store, ()).map_err(|e| format!("plugin_describe call error: {}", e))?;
+                let json_str = read_string(&store, &memory, ptr)?.0;
             serde_json::from_str::<Vec<ToolDefinition>>(&json_str)
                 .map_err(|e| format!("invalid tool definitions JSON: {}", e))?
         };

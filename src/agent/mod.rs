@@ -142,12 +142,17 @@ impl Agent {
         let args: Value = serde_json::from_str(arguments)
             .map_err(|e| format!("Failed to parse tool arguments: {}", e))?;
 
-        let handler = tools::get_tool_handler(name)
-            .ok_or_else(|| format!("Unknown tool: {}", name))?;
-
-        let result = tokio::task::spawn_blocking(move || handler(args))
-            .await
-            .map_err(|e| format!("Tool execution panicked: {}", e))??;
+        let result = if let Some(handler) = tools::get_tool_handler(name) {
+            // Built-in tool: fn pointer là 'static + Send, spawn_blocking an toàn
+            tokio::task::spawn_blocking(move || handler(args))
+                .await
+                .map_err(|e| format!("Tool execution panicked: {}", e))??
+        } else if let Some(plugin_result) = crate::plugin::execute_tool(name, args) {
+            // Plugin tool: dispatch trực tiếp qua Mutex, không cần spawn_blocking
+            plugin_result?
+        } else {
+            return Err(format!("Unknown tool: {}", name));
+        };
 
         let text = result.content.into_iter()
             .map(|c| match c {

@@ -53,7 +53,7 @@ Yêu cầu:
             .and_then(|c| c.message.content.as_deref())
             .ok_or("LLM không trả về nội dung")?;
 
-        let content = strip_markdown_fences(content);
+        let content = Self::strip_markdown_fences(content);
 
         let sub_tasks: Vec<SubTask> = serde_json::from_str(&content)
             .map_err(|e| format!("Không parse được subtasks từ LLM: {} — content: {}", e, content))?;

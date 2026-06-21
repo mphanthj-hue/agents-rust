@@ -33,15 +33,6 @@ impl PluginManager {
         None
     }
 
-    fn get_tool_handler(&self, name: &str) -> Option<ToolHandler> {
-        self.find_tool(name).map(|(_, plugin, tool)| {
-            let tool_name = tool.name.clone();
-            move |args: Value| -> Result<ToolResult, String> {
-                plugin.execute(&tool_name, args)
-            }
-        })
-    }
-
     fn execute(&self, plugin_idx: usize, tool_name: &str, args: Value) -> Result<ToolResult, String> {
         let plugin = &self.plugins[plugin_idx];
         plugin.execute(tool_name, args)
@@ -104,7 +95,4 @@ pub fn execute_tool(name: &str, args: Value) -> Option<Result<ToolResult, String
     Some(mgr.execute(plugin_idx, name, args))
 }
 
-pub fn get_plugin_tool_handler(name: &str) -> Option<ToolHandler> {
-    let mgr = PLUGIN_MANAGER.lock().ok()?;
-    mgr.get_tool_handler(name)
-}
+
